@@ -4,7 +4,7 @@ CREATE TABLE orders (
     total_amount DECIMAL(10,2) NOT NULL,
     status VARCHAR(50) DEFAULT 'pending', -- Trạng thái đơn hàng
     is_deleted BOOLEAN DEFAULT FALSE,
-    deleted_at TIMESTAMP NULL,
+    deleted_at DATE DEFAULT '1970-01-01',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
