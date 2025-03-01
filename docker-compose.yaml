@@ -20,7 +20,6 @@ x-airflow-common:
     - ./plugins:/opt/airflow/plugins
     - ./sql:/opt/airflow/sql
     - ./airflow.cfg:/opt/airflow/airflow.cfg
-    - ./data:/opt/airflow/data
   user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
   depends_on:
     redis:
