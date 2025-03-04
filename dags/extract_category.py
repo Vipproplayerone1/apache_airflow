@@ -2,6 +2,7 @@ from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.models import Variable
+from airflow_clickhouse_plugin.hooks.clickhouse import ClickHouseHook
 from datetime import datetime
 import pandas as pd
 import os
@@ -9,14 +10,7 @@ import os
 # Các biến cấu hình
 AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
 bucket_name = Variable.get("s3-bucket")
-table = "category"  # Tên bảng cần extract
-
-# Các thông tin kết nối ClickHouse
-CLICKHOUSE_HOST = Variable.get("clickhouse_host")
-CLICKHOUSE_PORT = 9000
-CLICKHOUSE_USER = Variable.get("clickhouse_user")
-CLICKHOUSE_PASSWORD = Variable.get("clickhouse_pass")
-CLICKHOUSE_DB = Variable.get("clickhouse_db")
+table = "category"
 
 @dag(
     dag_id="extract_category_table",
@@ -31,19 +25,22 @@ def extract_category():
         # Kết nối tới Postgres và S3
         postgres_hook = PostgresHook(postgres_conn_id='postgres_conn_id')
         s3_hook = S3Hook(aws_conn_id="aws_conn_id")
-        
+
         # Đọc file SQL template và format theo bảng cần extract
         sql_template_path = f"{AIRFLOW_HOME}/sql/postgres/extract/extract.sql"
         with open(sql_template_path, "r") as file:
             sql_query = file.read().format(table_name=table, condition='')
-        
+
         # Lấy dữ liệu và chuyển sang DataFrame
         df = postgres_hook.get_pandas_df(sql_query)
-        
+
+        # Thay đổi giá trị null ở cột 'deleted_at' thành '1970-01-01 00:00:00'
+        df['deleted_at'] = df['deleted_at'].fillna('1970-01-01 00:00:00')
+
         # Lưu DataFrame ra file Parquet
         output_path = f"{AIRFLOW_HOME}/{table}.parquet"
         df.to_parquet(output_path, index=False)
-        
+
         # Đẩy file lên S3
         key = f"data/{table}/{table}.parquet"
         s3_hook.load_file(
@@ -53,75 +50,52 @@ def extract_category():
             replace=True
         )
         os.remove(output_path)
-        
+
         # Trả về key của file trên S3 để task sau sử dụng
         return key
 
+
     @task(task_id="create_clickhouse_table")
-    def create_table():
-        from clickhouse_driver import Client
-        client = Client(
-            host=CLICKHOUSE_HOST,
-            port=CLICKHOUSE_PORT,
-            user=CLICKHOUSE_USER,
-            password=CLICKHOUSE_PASSWORD,
-            database=CLICKHOUSE_DB
-        )
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS category
-            (
-                id UInt32,
-                name String,
-                is_deleted UInt8 DEFAULT 0,
-                deleted_at Date DEFAULT toDate('1970-01-01'),
-                created_at DateTime DEFAULT now(),
-                updated_at DateTime DEFAULT now()
-            )
-            ENGINE = MergeTree()
-            ORDER BY id;
-        """
-        client.execute(create_table_sql)
-    
+    def create_clickhouse_table():
+        # Khởi tạo hook với connection id đã định nghĩa
+        clickhouse_hook = ClickHouseHook(clickhouse_conn_id="clickhouse_conn_id")
+        
+        # Đọc file SQL từ đường dẫn đã chỉ định
+        sql_path = f"{AIRFLOW_HOME}/sql/clickhouse/ddl/category.sql"
+        with open(sql_path, "r", encoding="utf-8") as file:
+            ddl_query = file.read()
+        
+        # Lấy connection và thực thi câu lệnh DDL
+        conn = clickhouse_hook.get_conn()
+        conn.execute(ddl_query)
+
+
     @task(task_id="load_to_clickhouse")
-    def load_to_clickhouse(parquet_key: str):
-        # Kết nối S3 để tải file xuống tạm thời
-        s3_hook = S3Hook(aws_conn_id="aws_conn_id")
-        local_file = f"/tmp/{os.path.basename(parquet_key)}"
-        
-        # Tải file từ S3 về local
-        s3_obj = s3_hook.get_key(key=parquet_key, bucket_name=bucket_name)
-        s3_obj.download_file(local_file)
-        
-        # Đọc file Parquet thành DataFrame
-        df = pd.read_parquet(local_file)
-        os.remove(local_file)
-        
-        # Kết nối tới ClickHouse
-        from clickhouse_driver import Client
-        client = Client(
-            host=CLICKHOUSE_HOST,
-            port=CLICKHOUSE_PORT,
-            user=CLICKHOUSE_USER,
-            password=CLICKHOUSE_PASSWORD,
-            database=CLICKHOUSE_DB
-        )
-        
-        # Lấy danh sách cột và chuyển dữ liệu sang dạng tuple
-        columns = list(df.columns)
-        data = [tuple(row) for row in df.to_numpy()]
-        
-        # Câu lệnh INSERT (bảng trong ClickHouse cần có cấu trúc tương ứng)
-        insert_query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES"
-        client.execute(insert_query, data)
+    def load_to_clickhouse(s3_key: str):
+        # Lấy giá trị biến từ Airflow Variables
+        s3_bucket = Variable.get("s3-bucket")
+        aws_access_key = Variable.get("aws_access_key")
+        aws_secret_key = Variable.get("aws_secret_key")
+        clickhouse_hook = ClickHouseHook(clickhouse_conn_id='clickhouse_conn_id')
+        # Tạo chuỗi SQL với giá trị thực
+        sql_query = f"""
+        INSERT INTO category
+        SELECT * FROM s3(
+            's3://{s3_bucket}/{s3_key}',
+            '{aws_access_key}',
+            '{aws_secret_key}',
+            'Parquet'
+        );
+        """
+        # Thực thi câu lệnh SQL
+        conn = clickhouse_hook.get_conn()
+        conn.execute(sql_query)
     
-    # Sắp xếp các task:
-    # Task extract thực hiện việc lấy dữ liệu và đẩy lên S3, trả về key file
-    parquet_key = extract()
-    
-    # Task create_table tạo bảng trong ClickHouse nếu chưa tồn tại
-    table_created = create_table()
-    
-    # Đảm bảo rằng bảng đã được tạo trước khi load dữ liệu vào ClickHouse
-    table_created >> load_to_clickhouse(parquet_key)
+    # Gọi task và xây dựng dependency:
+    s3_key = extract()  # task1
+    table_created = create_clickhouse_table()  # task2
+
+    # Khi cả hai task1 và task2 hoàn thành, mới chạy task3
+    load_to_clickhouse(s3_key) << [s3_key, table_created]
 
 extract_category()

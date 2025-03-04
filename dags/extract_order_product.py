@@ -2,6 +2,7 @@ from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.models import Variable
+from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
 from datetime import datetime
 import pandas as pd
 import os
@@ -9,14 +10,7 @@ import os
 # Các biến cấu hình
 AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
 bucket_name = Variable.get("s3-bucket")
-table = "order_product"  # Tên bảng cần extract
-
-# Các thông tin kết nối ClickHouse
-CLICKHOUSE_HOST = Variable.get("clickhouse_host")
-CLICKHOUSE_PORT = 9000
-CLICKHOUSE_USER = Variable.get("clickhouse_user")
-CLICKHOUSE_PASSWORD = Variable.get("clickhouse_pass")
-CLICKHOUSE_DB = Variable.get("clickhouse_db")
+table = "order_product"
 
 @dag(
     dag_id="extract_order_product_table",
@@ -57,17 +51,10 @@ def extract_order_product():
         # Trả về key của file trên S3 để task sau sử dụng
         return key
 
-    @task(task_id="create_clickhouse_table")
-    def create_table():
-        from clickhouse_driver import Client
-        client = Client(
-            host=CLICKHOUSE_HOST,
-            port=CLICKHOUSE_PORT,
-            user=CLICKHOUSE_USER,
-            password=CLICKHOUSE_PASSWORD,
-            database=CLICKHOUSE_DB
-        )
-        create_table_sql = """
+    # Tạo bảng trong ClickHouse thông qua airflow-clickhouse-plugin
+    create_clickhouse_table = ClickHouseOperator(
+         task_id="create_clickhouse_table",
+         sql="""
         CREATE TABLE IF NOT EXISTS order_product
         (
             order_id UInt32,
@@ -77,59 +64,27 @@ def extract_order_product():
         )
         ENGINE = MergeTree()
         ORDER BY (order_id, product_id);
-        """
-        client.execute(create_table_sql)
-    
-    @task(task_id="load_to_clickhouse")
-    def load_to_clickhouse(parquet_key: str):
-        # Kết nối S3 để tải file xuống tạm thời
-        s3_hook = S3Hook(aws_conn_id="aws_conn_id")
-        local_file = f"/tmp/{os.path.basename(parquet_key)}"
-        
-        # Tải file từ S3 về local
-        s3_obj = s3_hook.get_key(key=parquet_key, bucket_name=bucket_name)
-        s3_obj.download_file(local_file)
-        
-        # Đọc file Parquet thành DataFrame
-        df = pd.read_parquet(local_file)
-        os.remove(local_file)
-        
-        # Chuyển đổi cột 'price' sang kiểu Decimal
-        from decimal import Decimal
-        df['price'] = df['price'].apply(lambda x: Decimal(f"{x:.2f}"))
-        
-        # Chuyển đổi các cột số nguyên sang kiểu int (Python native int)
-        df['order_id'] = df['order_id'].apply(lambda x: int(x))
-        df['product_id'] = df['product_id'].apply(lambda x: int(x))
-        df['quantity'] = df['quantity'].apply(lambda x: int(x))
-        
-        # Kết nối tới ClickHouse
-        from clickhouse_driver import Client
-        client = Client(
-            host=CLICKHOUSE_HOST,
-            port=CLICKHOUSE_PORT,
-            user=CLICKHOUSE_USER,
-            password=CLICKHOUSE_PASSWORD,
-            database=CLICKHOUSE_DB
-        )
-        
-        # Lấy danh sách cột và chuyển dữ liệu sang dạng tuple
-        columns = list(df.columns)
-        data = [tuple(row) for row in df.to_numpy()]
-        
-        # Câu lệnh INSERT
-        insert_query = f"INSERT INTO {table} ({', '.join(columns)}) VALUES"
-        client.execute(insert_query, data)
+         """,
+         clickhouse_conn_id='clickhouse_conn_id'
+    )
 
+    # Load dữ liệu từ file Parquet trên S3 vào bảng ClickHouse sử dụng engine S3 của ClickHouse
+    load_to_clickhouse = ClickHouseOperator(
+         task_id="load_to_clickhouse",
+         sql="""
+         INSERT INTO order_product
+         SELECT * FROM s3(
+        's3://{{ var.value["s3-bucket"] }}/{{ ti.xcom_pull(task_ids="extract_order_product") }}',
+        '{{ var.value["aws_access_key"] }}',
+        '{{ var.value["aws_secret_key"] }}',
+        Parquet
+         );
+         """,
+         clickhouse_conn_id='clickhouse_conn_id'
+    )
     
-    # Sắp xếp các task:
-    # Task extract thực hiện việc lấy dữ liệu và đẩy lên S3, trả về key file
+    # Sắp xếp thứ tự thực hiện: tạo file trên s3 -> tạo bảng ClickHouse -> load dữ liệu từ file Parquet
     parquet_key = extract()
-    
-    # Task create_table tạo bảng trong ClickHouse nếu chưa tồn tại
-    table_created = create_table()
-    
-    # Đảm bảo rằng bảng đã được tạo trước khi load dữ liệu vào ClickHouse
-    table_created >> load_to_clickhouse(parquet_key)
+    create_clickhouse_table >> load_to_clickhouse
 
 extract_order_product()

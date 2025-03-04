@@ -1,4 +1,4 @@
-        CREATE TABLE IF NOT EXISTS topup
+        CREATE OR REPLACE TABLE topup
             (
                 id UInt32,
                 user_id UInt32,

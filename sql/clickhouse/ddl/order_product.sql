@@ -1,4 +1,4 @@
-        CREATE TABLE IF NOT EXISTS order_product
+        CREATE OR REPLACE TABLE order_product
         (
             order_id UInt32,
             product_id UInt32,

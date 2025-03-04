@@ -1,4 +1,4 @@
-        CREATE TABLE IF NOT EXISTS product
+        CREATE OR REPLACE TABLE product
             (
                 id UInt32,
                 name String,
@@ -7,7 +7,7 @@
                 stock Int32 DEFAULT 0,
                 category_id Nullable(Int32),
                 is_deleted UInt8 DEFAULT 0,
-                deleted_at Date DEFAULT toDate('1970-01-01'),
+                deleted_at DateTime DEFAULT,
                 created_at DateTime DEFAULT now(),
                 updated_at DateTime DEFAULT now()
             )

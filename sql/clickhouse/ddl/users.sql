@@ -1,4 +1,4 @@
-        CREATE TABLE IF NOT EXISTS users
+        CREATE OR REPLACE TABLE users
         (
             id UInt32,
             name String,
@@ -6,7 +6,7 @@
             phone String,
             is_activated UInt8 DEFAULT 1,
             is_deleted UInt8 DEFAULT 0,
-            deleted_at DateTime DEFAULT '1970-01-01 00:00:00',
+            deleted_at DateTime DEFAULT ,
             created_at DateTime DEFAULT now(),
             updated_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
