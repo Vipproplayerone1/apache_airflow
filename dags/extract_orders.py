@@ -1,94 +1,32 @@
-from airflow.decorators import dag, task
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.models import Variable
-from airflow_clickhouse_plugin.operators.clickhouse import ClickHouseOperator
+from airflow.decorators import dag
+from airflow.operators.python import PythonOperator
+from base.etl_process import ETLProcess
 from datetime import datetime
-import pandas as pd
 import os
 
-# Các biến cấu hình
-AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
-bucket_name = Variable.get("s3-bucket")
 table = "orders"
 
 @dag(
-    dag_id="extract_orders_table",
+    dag_id=f"extract_{table}",
     schedule=None,
     start_date=datetime(2021, 12, 1),
     catchup=False
 )
-def extract_orders():
-    
-    @task(task_id="extract_orders")
-    def extract():
-        # Kết nối tới Postgres và S3
-        postgres_hook = PostgresHook(postgres_conn_id='postgres_conn_id')
-        s3_hook = S3Hook(aws_conn_id="aws_conn_id")
-        
-        # Đọc file SQL template và format theo bảng cần extract
-        sql_template_path = f"{AIRFLOW_HOME}/sql/postgres/extract/extract.sql"
-        with open(sql_template_path, "r") as file:
-            sql_query = file.read().format(table_name=table, condition='')
-        
-        # Lấy dữ liệu và chuyển sang DataFrame
-        df = postgres_hook.get_pandas_df(sql_query)
-        
-        # Lưu DataFrame ra file Parquet
-        output_path = f"{AIRFLOW_HOME}/{table}.parquet"
-        df.to_parquet(output_path, index=False)
-        
-        # Đẩy file lên S3
-        key = f"data/{table}/{table}.parquet"
-        s3_hook.load_file(
-            filename=output_path,
-            key=key,
-            bucket_name=bucket_name,
-            replace=True
-        )
-        os.remove(output_path)
-        
-        # Trả về key của file trên S3 để task sau sử dụng
-        return key
-
-    # Tạo bảng trong ClickHouse thông qua airflow-clickhouse-plugin
-    create_clickhouse_table = ClickHouseOperator(
-         task_id="create_clickhouse_table",
-         sql="""
-        CREATE TABLE IF NOT EXISTS orders
-            (
-                id UInt32,
-                user_id UInt32,
-                total_amount Decimal(10, 2),
-                status String DEFAULT 'pending',
-                is_deleted UInt8 DEFAULT 0,
-                deleted_at DateTime DEFAULT '1970-01-01 00:00:00',
-                created_at DateTime DEFAULT now(),
-                updated_at DateTime DEFAULT now()
-            )
-            ENGINE = MergeTree()
-            ORDER BY id;
-         """,
-         clickhouse_conn_id='clickhouse_conn_id'
+def extract_users_test():
+    etl = ETLProcess(table_name=table)
+    extract = PythonOperator(
+        task_id=f'extract_{table}',
+        python_callable=etl.extract
+    )
+    create_clickhouse_table = PythonOperator(
+        task_id=f'create_clickhouse_{table}_table',
+        python_callable=etl.create_clickhouse_table
     )
 
-    # Load dữ liệu từ file Parquet trên S3 vào bảng ClickHouse sử dụng engine S3 của ClickHouse
-    load_to_clickhouse = ClickHouseOperator(
-         task_id="load_to_clickhouse",
-         sql="""
-         INSERT INTO orders
-         SELECT * FROM s3(
-        's3://{{ var.value["s3-bucket"] }}/{{ ti.xcom_pull(task_ids="extract_orders") }}',
-        '{{ var.value["aws_access_key"] }}',
-        '{{ var.value["aws_secret_key"] }}',
-        Parquet
-         );
-         """,
-         clickhouse_conn_id='clickhouse_conn_id'
+    load_to_clickhouse = PythonOperator(
+        task_id=f'load_to_clickhouse_{table}',
+        python_callable=etl.load_to_clickhouse,
+        op_args=[etl.extract()]
     )
-    
-    # Sắp xếp thứ tự thực hiện: tạo file trên s3 -> tạo bảng ClickHouse -> load dữ liệu từ file Parquet
-    parquet_key = extract()
-    create_clickhouse_table >> load_to_clickhouse
-
-extract_orders()
+    [extract , create_clickhouse_table] >> load_to_clickhouse
+extract_users_test()
