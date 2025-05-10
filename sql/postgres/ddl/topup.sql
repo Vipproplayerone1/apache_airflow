@@ -2,5 +2,6 @@ CREATE TABLE topup (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
     amount DECIMAL(10,2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
