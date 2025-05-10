@@ -4,10 +4,10 @@ from base.etl_process import ETLProcess
 from datetime import datetime
 import os
 
-table = "topup"
+table = "users"
 
 @dag(
-    dag_id=f"extract_{table}",
+    dag_id="extract_users_test",
     schedule=None,
     start_date=datetime(2021, 12, 1),
     catchup=False
