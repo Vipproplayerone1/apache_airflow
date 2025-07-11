@@ -1,12 +1,12 @@
-INSERT INTO category (name, is_deleted)
+INSERT INTO category (name, is_deleted, created_at, updated_at)
 VALUES
-  ('Electronics', FALSE),
-  ('Fashion', FALSE),
-  ('Home & Garden', FALSE),
-  ('Sports', FALSE),
-  ('Toys', FALSE),
-  ('Books', FALSE),
-  ('Automotive', FALSE),
-  ('Health & Beauty', FALSE),
-  ('Grocery', FALSE),
-  ('Music', FALSE);
+  ('Electronics', FALSE, '2024-01-01 08:00:00', '2024-01-01 08:00:00'),
+  ('Fashion', FALSE, '2024-01-01 08:05:00', '2024-01-01 08:05:00'),
+  ('Home & Garden', FALSE, '2024-01-01 08:10:00', '2024-01-01 08:10:00'),
+  ('Sports', FALSE, '2024-01-01 08:15:00', '2024-01-01 08:15:00'),
+  ('Toys', FALSE, '2024-01-01 08:20:00', '2024-01-01 08:20:00'),
+  ('Books', FALSE, '2024-01-01 08:25:00', '2024-01-01 08:25:00'),
+  ('Automotive', FALSE, '2024-01-01 08:30:00', '2024-01-01 08:30:00'),
+  ('Health & Beauty', FALSE, '2024-01-01 08:35:00', '2024-01-01 08:35:00'),
+  ('Grocery', FALSE, '2024-01-01 08:40:00', '2024-01-01 08:40:00'),
+  ('Music', FALSE, '2024-01-01 08:45:00', '2024-01-01 08:45:00');

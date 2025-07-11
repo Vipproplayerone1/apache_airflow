@@ -1,6 +1,6 @@
 from airflow.decorators import dag
 from airflow.operators.python import PythonOperator
-from base.etl_process import ETLProcess
+from base import ETLProcess
 from datetime import datetime
 import os
 
@@ -28,5 +28,6 @@ def extract_users_test():
         python_callable=etl.load_to_clickhouse,
         op_args=[etl.extract()]
     )
-    [extract , create_clickhouse_table] >> load_to_clickhouse
+    extract >> create_clickhouse_table >> load_to_clickhouse
+
 extract_users_test()
