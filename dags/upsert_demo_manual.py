@@ -10,6 +10,7 @@ from airflow.models.pool import Pool
 from airflow.configuration import conf
 import psutil
 import os
+import time
 
 # Danh sách các bảng cần upsert với priority levels
 TABLES_CONFIG = [
@@ -41,72 +42,80 @@ default_args = {
     'sla': timedelta(hours=4),  # SLA cho monitoring
 }
 
-def check_system_resources():
-    """Kiểm tra resource hệ thống trước khi chạy task"""
+def check_docker_limits():
+    """Simple resource check - thay thế Adaptive Throttling phức tạp"""
     memory_percent = psutil.virtual_memory().percent
     cpu_percent = psutil.cpu_percent(interval=1)
     
-    print(f"System resources: Memory {memory_percent}%, CPU {cpu_percent}%")
+    print(f"📊 System resources: Memory {memory_percent}%, CPU {cpu_percent}%")
     
-    # Nếu resource usage cao, delay task
-    if memory_percent > 85 or cpu_percent > 90:
-        print("System resources high, delaying task execution")
-        import time
-        time.sleep(30)  # Delay 30 giây
-        return False
+    # Simple monitoring thay vì complex throttling
+    if memory_percent > 85:
+        print(f"⚠️  Approaching Docker memory limit: {memory_percent}%")
+        print("💾 Triggering garbage collection...")
+        import gc
+        gc.collect()
+        time.sleep(5)  # Simple delay thay vì complex throttling
+        return True
+    elif memory_percent > 70:
+        print(f"ℹ️  Elevated memory usage: {memory_percent}%")
+        time.sleep(2)  # Light delay
+        return True
+    
+    if cpu_percent > 90:
+        print(f"⚠️  High CPU usage: {cpu_percent}%")
+        time.sleep(3)  # Simple delay
+        return True
+    
+    print("✅ Resources within Docker limits")
     return True
 
-def memory_optimized_upsert_sequential(**context):
-    """Wrapper function với memory optimization cho sequential execution"""
+def simple_upsert_with_monitoring(**context):
+    """Simple upsert function với basic resource monitoring - thay thế adaptive throttling"""
     table_name = context['table_name']
-    
-    # Delay nhỏ trước khi bắt đầu để giảm load
-    import time
-    time.sleep(2)
     
     # Tracking execution time
     start_time = time.time()
-    print(f"Starting upsert for {table_name} at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 Starting upsert for {table_name} at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Kiểm tra system resources
-    if not check_system_resources():
-        print("System resources too high, skipping this run")
-        return
+    # Simple resource check thay vì complex throttling
+    check_docker_limits()
     
-    # Lấy batch_size từ templates_dict hoặc sử dụng default
-    batch_size = context.get('templates_dict', {}).get('batch_size', 5000)
+    # Lấy batch_size từ templates_dict hoặc sử dụng default - tăng từ 5000 lên 10000
+    batch_size = context.get('templates_dict', {}).get('batch_size', 10000)
     if isinstance(batch_size, str):
         batch_size = int(batch_size)
     
-    print(f"Using batch_size: {batch_size} for table {table_name}")
+    print(f"📊 Using batch_size: {batch_size} for table {table_name}")
     
-    # Tạo UpsertProcess instance với batch_size
-    upsert_process = UpsertProcess(table_name=table_name, batch_size=batch_size)  # Thay đổi class
+    # Tạo UpsertProcess instance với batch_size tối ưu
+    upsert_process = UpsertProcess(table_name=table_name, batch_size=batch_size)
     
-    # Chạy upsert với resource monitoring
+    # Chạy upsert với simple monitoring
     try:
-        result = upsert_process.upsert_to_clickhouse(**context)  # Method giữ nguyên
+        print(f"🔄 Starting upsert...")
+        result = upsert_process.upsert_to_clickhouse(**context)
         
         # Track execution time
         end_time = time.time()
         execution_time = end_time - start_time
-        print(f"Completed upsert for {table_name} in {execution_time:.2f} seconds")
+        print(f"✅ Completed upsert for {table_name} in {execution_time:.2f} seconds")
         
-        # Small delay after completion to reduce worker load
-        time.sleep(3)
+        # Simple delay thay vì complex throttling
+        time.sleep(1)  # Fixed 1s delay
         
         return result
     except Exception as e:
-        print(f"Upsert failed for {table_name}: {str(e)}")
+        print(f"❌ Upsert failed for {table_name}: {str(e)}")
         # Log memory usage khi fail
         memory_percent = psutil.virtual_memory().percent
-        print(f"Memory usage at failure: {memory_percent}%")
+        print(f"💾 Memory usage at failure: {memory_percent}%")
         raise
 
 @dag(
     dag_id='upsert_demo_manual_sequential',
     default_args=default_args,
-    description='Demo Upsert Sequential - Chạy từng task để tránh worker overload',
+    description='Demo Upsert Sequential với Simple Monitoring - Tối ưu hóa hiệu suất với basic resource checks',
     schedule_interval=None,
     start_date=days_ago(1),
     catchup=False,
@@ -126,23 +135,22 @@ def memory_optimized_upsert_sequential(**context):
         "start_date": "2025-07-03 00:00:00",
         "end_date": "2025-07-04 00:00:00",
         "resource_check": True,
-        "batch_size": 5000  # Cho phép điều chỉnh batch size
+        "batch_size": 10000  # Tăng từ 5000 lên 10000 để tối ưu performance
     }
 )
 def upsert_demo_manual_sequential():
     """
-    ### DAG Demo Upsert Sequential (Worker Overload Prevention)
+    ### DAG Demo Upsert Sequential (Optimized Performance)
     
-    DAG này chạy từng task một để tránh worker overload với các cải tiến:
+    DAG này chạy từng task một với simple monitoring và tối ưu hóa hiệu suất:
     
     **Optimizations:**
     - Chạy tuần tự (sequential) - chỉ 1 task cùng lúc
-    - Task pools cho resource management
-    - Sequential task execution theo thứ tự dependencies
-    - System resource monitoring
-    - Memory-optimized processing
+    - Simple resource monitoring thay vì complex throttling
+    - Tăng batch size từ 5000 lên 10000 records
+    - Memory optimization với Docker limits
+    - Basic garbage collection checks
     - Exponential backoff retry
-    - Task timeout & SLA monitoring
     
     **Cách sử dụng:**
     1. Trigger DAG
@@ -152,15 +160,15 @@ def upsert_demo_manual_sequential():
          "start_date": "2025-07-03 00:00:00",
          "end_date": "2025-07-04 00:00:00",
          "resource_check": true,
-         "batch_size": 5000
+         "batch_size": 10000
        }
        ```
-    3. Monitor sequential execution qua Airflow UI
+    3. Monitor performance qua Airflow UI
     
     **Resource Management:**
     - Max 1 task concurrent (sequential execution)
-    - System resource check trước khi chạy
-    - Memory usage monitoring
+    - Docker resource limits (4GB memory, 2 CPU)
+    - Simple memory checks với basic GC
     - Task execution theo thứ tự dependencies
     """
     
@@ -179,7 +187,7 @@ def upsert_demo_manual_sequential():
         # Tạo task với optimizations
         tasks[table_name] = PythonOperator(
             task_id=f'upsert_{table_name}',
-            python_callable=memory_optimized_upsert_sequential,
+            python_callable=simple_upsert_with_monitoring,
             
             # Templates dict với parameters
             templates_dict={

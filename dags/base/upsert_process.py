@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import time
 import gc
+import psutil
 
 class UpsertProcess:
     """
@@ -14,17 +15,17 @@ class UpsertProcess:
     Tách biệt khỏi ETLProcess để dễ maintain và test
     """
     
-    def __init__(self, table_name: str, batch_size: int = 5000):
+    def __init__(self, table_name: str, batch_size: int = 10000):
         self.AIRFLOW_HOME = os.getenv("AIRFLOW_HOME", "/opt/airflow")
         self.bucket_name = Variable.get("s3-bucket")
         self.table = table_name
         self.s3_hook = S3Hook(aws_conn_id="aws_conn_id")
         
-        # Optimization settings
-        self.chunk_size = min(batch_size, 10000)
+        # Optimization settings - tăng batch_size mặc định từ 5000 lên 10000
+        self.chunk_size = min(batch_size, 15000)  # Tăng max chunk size
         self.parquet_compression = 'snappy'
-        self.max_memory_usage_mb = 512
-        self.gc_frequency = 1000
+        self.max_memory_usage_mb = 1024  # Tăng từ 512MB lên 1024MB
+        self.gc_frequency = 2000  # Simple fixed frequency
         
         # Tables với timestamp columns
         self.tables_with_created_at = [
@@ -49,6 +50,14 @@ class UpsertProcess:
             gc.collect()
             
         return memory_percent, process_memory_mb
+    
+    def _simple_gc_check(self):
+        """Simple garbage collection check - thay thế adaptive throttling"""
+        memory_percent = psutil.virtual_memory().percent
+        if memory_percent > 80:
+            print(f"💾 High memory usage ({memory_percent}%), triggering GC")
+            gc.collect()
+            time.sleep(1)  # Simple 1s delay
     
     def extract_with_date_range(self, start_date, end_date):
         """
@@ -89,9 +98,8 @@ class UpsertProcess:
             # Monitor memory usage after reading
             memory_percent, process_memory_mb = self._monitor_memory_usage("after reading data")
             
-            if memory_percent > 85:
-                print("WARNING: Memory usage too high, forcing garbage collection")
-                gc.collect()
+            # Simple GC check thay vì complex throttling
+            self._simple_gc_check()
             
             if df.empty:
                 print(f"No data found for table {self.table} in date range {start_date} to {end_date}")
@@ -102,7 +110,7 @@ class UpsertProcess:
                 df["deleted_at"] = df["deleted_at"].fillna("1970-01-01 00:00:00")
             
             print(f"DataFrame shape: {df.shape}")
-            self._monitor_memory_usage("after concatenation")
+            self._monitor_memory_usage("after data processing")
 
             # Tạo tên file với thông tin khoảng thời gian
             date_suffix = start_date.replace('-', '').replace(' ', '_').replace(':', '')
@@ -179,16 +187,15 @@ class UpsertProcess:
             # Thực hiện proper upsert bằng cách sử dụng temporary table
             result = self._perform_safe_upsert(s3_key, start_date, end_date)
             
-            # Cleanup S3 file after successful upsert
-            self._cleanup_s3_file(s3_key)
+            # Giữ S3 file để tái sử dụng - không cleanup
+            print(f"✅ Upsert completed successfully. S3 file preserved: {s3_key}")
             
             return result
                 
         except Exception as e:
             print(f"Upsert failed for {self.table}: {str(e)}")
-            # Cleanup S3 file on error
-            if 's3_key' in locals():
-                self._cleanup_s3_file(s3_key)
+            # Không cleanup S3 file khi có lỗi - giữ lại để debug
+            print(f"💾 S3 file preserved for debugging: {s3_key if 's3_key' in locals() else 'N/A'}")
             raise
     
     def _perform_safe_upsert(self, s3_key, start_date, end_date):
@@ -324,13 +331,3 @@ class UpsertProcess:
         if start_date >= end_date:
             raise ValueError(f"start_date ({start_date}) must be before end_date ({end_date})")
     
-    def _cleanup_s3_file(self, s3_key):
-        """
-        Clean up S3 file after processing
-        """
-        try:
-            if s3_key:
-                self.s3_hook.delete_object(key=s3_key, bucket_name=self.bucket_name)
-                print(f"Cleaned up S3 file: {s3_key}")
-        except Exception as e:
-            print(f"Failed to cleanup S3 file {s3_key}: {str(e)}") 
